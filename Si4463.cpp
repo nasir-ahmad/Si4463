@@ -30,154 +30,292 @@
 
 #include "Si4463.h"
 
-Si4463::Si4463(HardwareSPI *spi_dev, uint8 nsel_pin, uint8 sdn_pin){
-	
-	timeout = 5000;
-	
-	_port.nsel = nsel_pin;
-	_port.sdn = sdn_pin;
-	_port.spi = spi_dev;
-	
-	pinMode(_port.nsel, OUTPUT);
-	pinMode(_port.sdn, OUTPUT);
-	
-	_port.spi->begin(SPI_9MHZ, MSBFIRST, 0);	
-	digitalWrite(_port.nsel, HIGH);
-	digitalWrite(_port.sdn, HIGH);	
-	
+static const uint8_t configs[] PROGMEM = RADIO_CONFIGURATION_DATA_ARRAY;
+
+Si4463::Si4463(SPIClass *spiPort, uint8 nselPin, uint8 sdnPin)
+{
+    this->_port.spi = spiPort;
+    this->_port.nsel = nselPin;
+    this->_port.sdn = sdnPin;
 }
 
-void Si4463::powerUp(){
-	uint8 data[] = { 0x02, 0x01, 0x00, 0x01, 0xC9, 0xC3, 0x80 };
-	execCmd(POWER_UP, data, sizeof(data));
+void Si4463::begin()
+{
+    //Configure spi interface
+    SPI.begin();                         //Initialize the port.
+    SPI.setBitOrder(MSBFIRST);           // Set the SPI bit order
+    SPI.setDataMode(SPI_MODE0);          //Set the  SPI data mode 0
+    SPI.setClockDivider(SPI_CLOCK_DIV8); // Slow speed (72 / 16 = 4.5 MHz SPI_1 speed)
+
+    //Setup pins
+    pinMode(_port.nsel, OUTPUT);
+    pinMode(_port.sdn, OUTPUT);
+
+    //Initialize pins with disable states
+    digitalWrite(_port.nsel, HIGH);
+    digitalWrite(_port.sdn, HIGH);
 }
 
-uint8 Si4463::nop(){
-	uint8 cts;	
-	digitalWrite(_port.nsel, LOW);	
-	_port.spi->write(NOP);
-	cts = _port.spi->transfer(0x00);
-	digitalWrite(_port.nsel, HIGH);	
-	
-	return cts;
+/**
+ * Execute raw command
+ * data[0] = CMD
+ * data[1..n] = arguments
+ * 
+ */
+void Si4463::execCommand(uint8 *data, uint8 length)
+{
+    digitalWrite(_port.nsel, LOW);
+    SPI.write(data, length);
+    digitalWrite(_port.nsel, HIGH);
 }
 
-uint8 Si4463::partInfo(){
-	execCmd(PART_INFO, 0, 0);
-	
-	/* Return number of reply bytes */
-	return 8;
+/**
+ * Execute command 
+ */
+void Si4463::execCommand(uint8 cmd)
+{
+    digitalWrite(_port.nsel, LOW);
+    SPI.write(cmd);
+    digitalWrite(_port.nsel, HIGH);
 }
 
-uint8 Si4463::funcInfo(){
-	execCmd(FUNC_INFO, 0, 0);
-	return 6;
+/**
+ * Execute command with parameters
+ */
+void Si4463::execCommand(uint8 cmd, uint8 *data, uint8 length)
+{
+    digitalWrite(_port.nsel, LOW);
+    SPI.write(cmd);
+    if ((data != NULL) && (length > 0))
+        SPI.write(data, length);
+    digitalWrite(_port.nsel, HIGH);
 }
 
-void Si4463::setProperty(uint8 group, uint8 num_props, uint8 start_prop, byte* buffer){
-	uint8 length = num_props + 3;
-	uint8 data[length];
-	
-	data[0] = group;
-	data[1] = num_props;
-	data[2] = start_prop;
-	
-	for(uint8 i = 0; i < num_props; i++){
-		data[i+3] = buffer[i];		
-	}
-	
-	execCmd(SET_PROPERTY, buffer, length);
-	
-	/*
-	digitalWrite(_port.nsel, LOW);	
-	
-	_port.spi->write(SET_PROPERTY);	
-	_port.spi->write(group);
-	_port.spi->write(num_props);
-	_port.spi->write(start_prop);
-	
-	while(num_props--){
-		_port.spi->write(*buffer++);
-	}
-	
-	digitalWrite(_port.nsel, HIGH);	
-	*/
+/**
+ * Read response from cmd buffer of the executed command.
+ * Wait for cts before reading.
+ */
+void Si4463::readCmdBuffer(uint8 *responseStream, uint8 length)
+{
+    while (true)
+    {
+        digitalWrite(_port.nsel, LOW);
+        SPI.write(CMD_READ_CMD_BUFF);
+        _cts = SPI.transfer(0x00);
+        if (_cts == 0xFF)
+        {
+            while (length--)
+                *responseStream++ = SPI.transfer(0x00);
+            digitalWrite(_port.nsel, HIGH);
+            break;
+        }
+
+        digitalWrite(_port.nsel, HIGH);
+    }
 }
 
-uint8 Si4463::getProperty(uint8 group, uint8 num_props, uint8 start_prop){
-	uint8 data[] = { group, num_props, start_prop };
-	execCmd(GET_PROPERTY, data, sizeof(data));
-	
-	return num_props;
+/**
+ * Wait for clear to send
+ */
+void Si4463::waitCts()
+{
+    while (true)
+    {
+        digitalWrite(_port.nsel, LOW);
+        SPI.write(CMD_READ_CMD_BUFF);
+        this->_cts = SPI.transfer(0x00);
+        digitalWrite(_port.nsel, HIGH);
+
+        if (this->_cts == 0xFF)
+            break;
+    }
 }
 
-void Si4463::startTx(uint8 channel, uint8 condition, uint8 tx_len){
-	uint8 data[] = { channel, condition, tx_len };
-	execCmd(START_TX, data, 3);
+/**
+ * POR (Power On Reset) radio 
+ * and wait for complete
+ * 
+ */
+void Si4463::por()
+{
+    digitalWrite(_port.sdn, HIGH);
+    delayMicroseconds(15);
+    digitalWrite(_port.sdn, LOW);
+
+    //Wait for max. delay of POR (<6ms)
+    delay(10);
 }
 
+/**
+ * Power up radio
+ */
+void Si4463::powerUp()
+{
+    //Trigger POR (power on reset) and wait complete
+    this->por();
+    delay(4000);
+    uint8 buffer[20];
 
-void Si4463::startTx(){
-	execCmd(START_TX, 0, 0);	
+    //Apply radio configs
+    for (uint16 i = 0; i < sizeof(configs); i++)
+    {
+        memcpy_P(buffer, &configs[i], sizeof(buffer));
+        i += buffer[0];
+        this->execCommand(&buffer[1], buffer[0]);
+        this->waitCts();
+
+        /*        
+        for (int j = 0; j <= buffer[0]; j++)
+        {
+            Serial.print(buffer[j], 16);
+            Serial.print('-');
+        }
+        Serial.println("");
+        delay(500);
+        */
+    }
 }
 
-
-void Si4463::writeTxFifo(byte *buffer, uint8 length){
-	execCmd(WRITE_TX_FIFO, buffer, length);	
+/**
+ * Get device part info
+ */
+void Si4463::partInfo(uint8 *data, uint8 length)
+{
+    //ROM ID (3 = revB1B, 6 = revC2A)
+    this->execCommand(CMD_PART_INFO);
+    this->readCmdBuffer(data, length);
 }
 
-void Si4463::readRxFifo(byte *buffer, uint8 length){
-	execCmd(READ_RX_FIFO, 0, 0);
-	
-	//This command does not cause CTS to go low, and can be sent while CTS is low. 
-	readCmdBuffer(buffer, length, true);
+/**
+ * Reqeust device state and return response 
+ */
+void Si4463::requestDeviceState(uint8 *data, uint8 length)
+{
+    this->execCommand(CMD_REQUEST_DEVICE_STATE);
+    this->readCmdBuffer(data, length);
 }
 
-
-uint8 Si4463::readCmdBuffer(byte *buffer, uint8 length, uint8 ignoreCts){
-	volatile uint8 cts = 0x00;
-	
-	//while(!cts){
-		digitalWrite(_port.nsel, LOW);	
-		_port.spi->write(READ_CMD_BUFF);	//Send read_command_buffer command
-		cts = ignoreCts || _port.spi->transfer(0x00);	//Send dummy byte to read CTS
-				
-		if (cts && buffer){
-			while(length--){
-				*buffer++ = _port.spi->transfer(0x00);	//Sending dummy byte to generate clock
-			}
-		}
-		digitalWrite(_port.nsel, HIGH);
-		
-		//if(!timeout)
-		//	return cts;		
-	//}
-	
-	return cts;
+/**
+ *  Change current device state to target state
+ */
+void Si4463::changeState(uint8 state)
+{
+    uint8 data[] = {state};
+    this->execCommand(CMD_CHANGE_STATE, data, 1);
+    this->waitCts();
 }
 
-uint8 Si4463::readCmdBuffer(byte *buffer, uint8 length){
-	return readCmdBuffer(buffer, length, 0);
+/**
+ * Get packet handler status
+ * and clear interrupt flags
+ */
+void Si4463::getPacketHandlerStatus(uint8 phClrPend, uint8 *response, uint8 length)
+{
+    uint8 data[] = {phClrPend};
+    this->execCommand(CMD_GET_PH_STATUS, data, 1);
+    this->readCmdBuffer(response, length);
 }
 
-/*
-void Si4463::packetInfo(uint8 fieldNumber, uint16 len, uint16 lenDiff){
-		
+/**
+ * Get fifo info
+ */
+void Si4463::fifoInfo(uint8 reset, uint8 *response, uint8 length)
+{
+    uint8 data[] = {reset};
+    this->execCommand(CMD_FIFO_INFO, data, 1);
+    this->readCmdBuffer(response, length);
 }
-*/
 
+/**
+ * Set property
+ */
+void Si4463::setProperty(uint8 group, uint8 length, uint8 start, uint8 *data)
+{
+    digitalWrite(_port.nsel, LOW);
+    SPI.write(CMD_SET_PROPERTY);
+    SPI.write(group);
+    SPI.write(length);
+    SPI.write(start);
+    SPI.write(data, length);
+    digitalWrite(_port.nsel, HIGH);
 
-void Si4463::execCmd(uint8 cmd, byte* buffer, uint8 length){
-	uint8 bbyte;
-	
-	digitalWrite(_port.nsel, LOW);	
-	_port.spi->write(cmd);
-	
-	while(length--){
-		bbyte = *buffer++;
-		if (bbyte == NULL) break;
-		_port.spi->write(bbyte);
-	}
-	
-	digitalWrite(_port.nsel, HIGH);	 
+    this->waitCts();
+}
+
+/**
+ * Get property
+ */
+void Si4463::getProperty(uint8 group, uint8 length, uint8 start, uint8 *data)
+{
+    digitalWrite(_port.nsel, LOW);
+    SPI.write(CMD_SET_PROPERTY);
+    SPI.write(group);
+    SPI.write(length);
+    SPI.write(start);
+    digitalWrite(_port.nsel, HIGH);
+
+    this->readCmdBuffer(data, length);
+}
+
+/**
+ * Start tx
+ */
+void Si4463::startTx(uint8 channel, uint8 txCompleteState, bool retransmit, uint8 start, uint16 txLen)
+{
+    uint8 data[] = {
+        channel,
+        (txCompleteState << 4) | start,
+        txLen >> 8,
+        txLen};
+
+    this->execCommand(CMD_START_TX, data, sizeof(data));
+    this->waitCts();
+}
+
+/**
+ * Write data to TX FIFO
+ */
+void Si4463::writeTxFifo(uint8 *buffer, uint8 length)
+{
+    this->execCommand(CMD_WRITE_TX_FIFO, buffer, length);
+}
+
+/**
+ * Start RX
+ */
+void Si4463::startRx(uint8 channel, uint8 start, uint16 rxLen, uint8 state1, uint8 state2, uint8 state3)
+{
+    uint8 data[] = {
+        channel,
+        start,
+        rxLen >> 8,
+        rxLen,
+        state1,
+        state2,
+        state3,
+    };
+
+    this->execCommand(CMD_START_RX, data, sizeof(data));
+    this->waitCts();
+}
+
+/**
+ * Read data from RX FIFO
+ */
+void Si4463::readRxFifo(uint8 *buffer, uint8 length)
+{
+    digitalWrite(_port.nsel, LOW);
+    SPI.write(CMD_READ_RX_FIFO);
+    while (length--)
+    {
+        *buffer++ = SPI.transfer(0x00);
+    }
+    digitalWrite(_port.nsel, HIGH);
+}
+
+void Si4463::getIntStatus(uint8 phClrPend, uint8 modemClrPend, uint8 chipClrPend, uint8 *data, uint8 length)
+{
+    uint8 params[] = {phClrPend, modemClrPend, chipClrPend};
+    this->execCommand(CMD_GET_INT_STATUS, params, sizeof(params));
+    this->readCmdBuffer(data, length);
 }

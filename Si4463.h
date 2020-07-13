@@ -27,89 +27,91 @@
 /**
  *  @brief SI4463 RF module library for LeafLabs Maple
  */
- 
- 
+
 #ifndef _SI4463_H_
 #define _SI4463_H_
 
-
-#include "libmaple_types.h"
-#include "HardwareSPI.h"
-#include "io.h"
-#include "delay.h"
-#include "wirish.h"
-
+#include "Arduino.h"
+#include "SPI.h"
+#include "radio_config_Si4463.h"
 
 /* Commands */
-#define	POWER_UP				0x02
-#define NOP						0x00
-#define PART_INFO				0x01
-#define FUNC_INFO				0x10
-#define SET_PROPERTY			0x11
-#define GET_PROPERTY			0x12
-#define GPIO_PIN_CFG			0x13
-#define FIFO_INFO				0x15
-#define GET_INT_STATUS			0x20
-#define REQUEST_DEVICE_STATE	0x33
-#define CHANGE_STATE			0x34
-#define READ_CMD_BUFF			0x44
-#define FRR_A_READ				0x50
-#define FRR_B_READ				0x51
-#define FRR_C_READ				0x53
-#define FRR_D_READ				0x57
-#define IRCAL					0x17
-#define IRCAL_MANUAL 			0x1a
-#define	START_TX				0x31
-#define	WRITE_TX_FIFO 			0x66
-#define PACKET_INFO				0x16
-#define GET_MODEM_STATUS		0x22
-#define START_RX				0x32
-#define RX_HOP					0x36
-#define READ_RX_FIFO 			0x77
-#define GET_ADC_READING			0x14
-#define GET_PH_STATUS			0x21
-#define GET_CHIP_STATUS 		0x23
+#define CMD_POWER_UP 0x02
+#define CMD_NOP 0x00
+#define CMD_PART_INFO 0x01
+#define CMD_FUNC_INFO 0x10
+#define CMD_SET_PROPERTY 0x11
+#define CMD_GET_PROPERTY 0x12
+#define CMD_GPIO_PIN_CFG 0x13
+#define CMD_FIFO_INFO 0x15
+#define CMD_GET_INT_STATUS 0x20
+#define CMD_REQUEST_DEVICE_STATE 0x33
+#define CMD_CHANGE_STATE 0x34
+#define CMD_READ_CMD_BUFF 0x44
+#define CMD_FRR_A_READ 0x50
+#define CMD_FRR_B_READ 0x51
+#define CMD_FRR_C_READ 0x53
+#define CMD_FRR_D_READ 0x57
+#define CMD_IRCAL 0x17
+#define CMD_IRCAL_MANUAL 0x1a
+#define CMD_START_TX 0x31
+#define CMD_WRITE_TX_FIFO 0x66
+#define CMD_PACKET_INFO 0x16
+#define CMD_GET_MODEM_STATUS 0x22
+#define CMD_START_RX 0x32
+#define CMD_RX_HOP 0x36
+#define CMD_READ_RX_FIFO 0x77
+#define CMD_GET_ADC_READING 0x14
+#define CMD_GET_PH_STATUS 0x21
+#define CMD_GET_CHIP_STATUS 0x23
 
+typedef struct si4463deviceState_t
+{
+	uint8 test;
+} si4463deviceState;
 
-/* Properties */
+class Si4463
+{
+public:
+	/* Variables */
+	typedef struct
+	{
+		SPIClass *spi;
+		uint8 sdn;
+		uint8 nsel;
+		uint8 nirq;
+		uint8 cts;
+		uint8 gpio0;
+		uint8 gpio1;
+		uint8 gpio2;
+		uint8 gpio3;
+	} Port;
 
-class Si4463 {	
-	public:
-		/* Variables */
-		typedef	struct {
-			HardwareSPI* 	spi;
-			uint8			sdn;			
-			uint8			nsel;
-			uint8			nirq;
-			uint8			gpio0;
-			uint8			gpio1;
-			uint8			gpio2;
-			uint8			gpio3;
-		} Port;	
-		uint16 timeout;		
-		
-		/* Function declarations */ 
-		Si4463(HardwareSPI*, uint8, uint8);
-		void powerUp();
-		uint8 nop();
-		uint8 partInfo();
-		uint8 funcInfo();
-		void setProperty(uint8 group, uint8 num_props, uint8 start_prop, byte* buffer);
-		uint8 getProperty(uint8 group, uint8 num_props, uint8 start_prop);
-		uint8 readCmdBuffer(byte*, uint8, uint8);		
-		uint8 readCmdBuffer(byte*, uint8);
-		void startTx(uint8 channel, uint8 condition, uint8 tx_len);
-		void startTx();
-		void writeTxFifo(byte*, uint8);
-		void readRxFifo(byte*, uint8);
-
-		
-	private:
-		Port _port;
-		uint8 _cmdBufferLength;
-		void execCmd(uint8, byte*, uint8);
-		
+	/* Function declarations */
+	Si4463(SPIClass *spiPort, uint8 nselPin, uint8 sdnPin);
+	void begin();
+	void powerUp();
+	void por();
+	void partInfo(uint8 *data, uint8 length);
+	void requestDeviceState(uint8 *data, uint8 length);
+	void getIntStatus(uint8 phClrPend, uint8 modemClrPend, uint8 chipClrPend, uint8 *data, uint8 length);
+	void changeState(uint8 state);
+	void getPacketHandlerStatus(uint8 phClrPend, uint8 *response, uint8 length);
+	void fifoInfo(uint8 reset, uint8 *response, uint8 length);
+	void setProperty(uint8 group, uint8 length, uint8 start, uint8 *data);
+	void getProperty(uint8 group, uint8 length, uint8 start, uint8 *response);
+	void startTx(uint8 channel, uint8 txCompleteState, bool retransmit, uint8 start, uint16 txLen);
+	void writeTxFifo(uint8 *data, uint8 length);
+	void startRx(uint8 channel, uint8 start, uint16 rxLen, uint8 state1, uint8 state2, uint8 state3);
+	void readRxFifo(uint8 *data, uint8 length);
+private:
+	Port _port;
+	volatile uint8 _cts;
+	void waitCts();
+	void execCommand(uint8 *data, uint8 length); //Execute raw command
+	void execCommand(uint8 cmd);
+	void execCommand(uint8 cmd, uint8 *data, uint8 length);
+	void readCmdBuffer(uint8 *responseBuffer, uint8 length);
 };
-
 
 #endif
